@@ -1,0 +1,71 @@
+version: '3.8'
+services:
+  polaris:
+    image: apache/polaris:latest
+    platform: linux/amd64
+    ports:
+      - "8181:8181"
+      - "8182:8182"
+    networks:
+      - polaris-net
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ENDPOINT_URL_STS: http://minio:9000
+      POLARIS_BOOTSTRAP_CREDENTIALS: default,admin,password
+      polaris.realm-context.realms: default
+      polaris.features.DROP_WITH_PURGE_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    networks:
+      polaris-net:
+        aliases:
+          - minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  minio-client:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    networks:
+      - polaris-net
+    entrypoint: >
+      /bin/sh -c "
+        until mc alias set minio http://minio:9000 admin password; do sleep 1; done;
+        mc mb minio/lakehouse;
+        mc mb minio/warehouse;
+        mc anonymous set public minio/lakehouse;
+        mc anonymous set public minio/warehouse;
+        tail -f /dev/null
+      "
+  spark:
+    platform: linux/x86_64
+    image: alexmerced/spark35nb:latest
+    ports: 
+      - "8080:8080"  # Master Web UI
+      - "7077:7077"  # Master Port
+      - "8888:8888"  # Jupyter Notebook
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+    container_name: spark
+    networks:
+      - polaris-net
+networks:
+  polaris-net:
+    driver: bridge
