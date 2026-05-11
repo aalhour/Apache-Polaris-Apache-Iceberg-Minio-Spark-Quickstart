@@ -64,7 +64,19 @@ To access:
 ## 🧰 Step 2: Bootstrap Polaris
 Once the containers are running, bootstrap Polaris with the provided script.
 
-Create a new Jupyter notebook and run the code in `bootstrap.py` found inside this repo.
+The easiest way is to run it directly via `docker exec` (the script uses internal Docker hostnames like `polaris:8181`, so it must run inside the container network):
+
+```bash
+docker cp bootstrap.py spark:/root/bootstrap.py
+docker exec spark python3 /root/bootstrap.py
+```
+
+Notes:
+- Use `python3`, not `python` — the spark container does not have a `python` symlink.
+- Copy to `/root/`, not `/home/jovyan/` — that path does not exist in this image.
+- The script prints `clientId` and `clientSecret` at the end — save these for Step 3.
+
+Alternatively, open http://localhost:8888, create a new notebook, and paste the full contents of `bootstrap.py` into a cell and run it.
 
 This script will:
 
@@ -81,35 +93,41 @@ This script will:
 ## 📊 Step 3: Connect Spark to Polaris
 In a new notebook (http://localhost:8888), paste the configuration printed at the end of running bootstrap.py.
 
-It will look like this:
+It will look like this (replace `<clientId>:<clientSecret>` with the values from the bootstrap output):
 
 ```python
 from pyspark.sql import SparkSession
 
 spark = (SparkSession.builder
     .config("spark.jars.packages", "org.apache.polaris:polaris-spark-3.5_2.13:1.1.0-incubating,org.apache.iceberg:iceberg-aws-bundle:1.10.0,io.delta:delta-spark_2.12:3.3.1,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.0")
+    .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,io.delta.sql.DeltaSparkSessionExtension")
     .config("spark.sql.catalog.polaris", "org.apache.polaris.spark.SparkCatalog")
     .config("spark.sql.catalog.polaris.uri", "http://polaris:8181/api/catalog")
     .config("spark.sql.catalog.polaris.warehouse", "lakehouse")
     .config("spark.sql.catalog.polaris.credential", "<clientId>:<clientSecret>")
     .config("spark.sql.catalog.polaris.scope", "PRINCIPAL_ROLE:ALL")
-    .config("spark.sql.catalog.polaris.header.X-Iceberg-Access-Delegation", "vended-credentials")
-    .config("spark.sql.catalog.polaris.rest.auth.type", "oauth2")
-    .config("spark.sql.catalog.polaris.oauth2-server-uri", "http://polaris:8181/api/catalog/v1/oauth/tokens")
+    .config("spark.sql.catalog.polaris.token-refresh-enabled", "true")
+    .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+    .config("spark.hadoop.fs.s3a.path.style.access", "true")
+    .config("spark.hadoop.fs.s3a.access.key", "admin")
+    .config("spark.hadoop.fs.s3a.secret.key", "password")
     .getOrCreate())
 ```
 
-Replace <clientId> and <clientSecret> with the values printed from the bootstrap script (these will be pre-populated if you run the script).
+> **Note:** Do not set `X-Iceberg-Access-Delegation: vended-credentials` — MinIO does not support STS credential vending. Use the static S3A credentials above instead.
 
 ## 🧪 Step 4: Verify the Setup
 You can now run SQL commands through Spark:
 
 ```python
 spark.sql("CREATE NAMESPACE IF NOT EXISTS polaris.db")
-spark.sql("CREATE TABLE IF NOT EXISTS polaris.db.example (name STRING)")
+spark.sql("CREATE TABLE IF NOT EXISTS polaris.db.example (name STRING) USING iceberg")
 spark.sql("INSERT INTO polaris.db.example VALUES ('example value')")
-spark.sql("SELECT * FROM polaris.db.example").show()
+spark.sql("SELECT * FROM polaris.db.example").toPandas()
 ```
+
+> **Note:** Use `.toPandas()` instead of `.show()` in Jupyter — `.show()` output goes to the Spark driver log (container stdout), not the notebook cell. Also always specify `USING iceberg` when creating tables.
 
 You should see your table appear and the data stored in MinIO under the lakehouse bucket.
 
