@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   polaris:
     image: apache/polaris:latest
@@ -17,11 +16,14 @@ services:
       POLARIS_BOOTSTRAP_CREDENTIALS: default,admin,password
       polaris.realm-context.realms: default
       polaris.features.DROP_WITH_PURGE_ENABLED: "true"
+    depends_on:
+      minio:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8181/healthcheck"]
+      test: ["CMD", "curl", "-f", "http://localhost:8182/q/health"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -36,26 +38,32 @@ services:
       - "9000:9000"
       - "9001:9001"
     command: ["server", "/data", "--console-address", ":9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   minio-client:
     image: minio/mc:latest
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     networks:
       - polaris-net
     entrypoint: >
       /bin/sh -c "
-        until mc alias set minio http://minio:9000 admin password; do sleep 1; done;
+        mc alias set minio http://minio:9000 admin password;
         mc mb minio/lakehouse;
         mc mb minio/warehouse;
         mc anonymous set public minio/lakehouse;
         mc anonymous set public minio/warehouse;
-        tail -f /dev/null
       "
+
   spark:
-    platform: linux/x86_64
+    platform: linux/amd64
     image: alexmerced/spark35nb:latest
-    ports: 
+    ports:
       - "8080:8080"  # Master Web UI
       - "7077:7077"  # Master Port
       - "8888:8888"  # Jupyter Notebook
@@ -66,6 +74,12 @@ services:
     container_name: spark
     networks:
       - polaris-net
+    depends_on:
+      polaris:
+        condition: service_healthy
+      minio-client:
+        condition: service_completed_successfully
+
 networks:
   polaris-net:
     driver: bridge
